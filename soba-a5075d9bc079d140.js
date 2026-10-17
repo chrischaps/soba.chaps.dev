@@ -1638,7 +1638,7 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000007: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { dtor_idx: 99, function: Function { arguments: [NamedExternref("MIDIMessageEvent")], shim_idx: 100, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { dtor_idx: 943, function: Function { arguments: [NamedExternref("MIDIMessageEvent")], shim_idx: 944, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen_9491f87e05b95aaf___closure__destroy___dyn_core_37ee0ce0c4cd57d5___ops__function__FnMut__web_sys_bdda9a6d63404f7b___features__gen_MidiMessageEvent__MidiMessageEvent____Output_______, wasm_bindgen_9491f87e05b95aaf___convert__closures_____invoke___web_sys_bdda9a6d63404f7b___features__gen_MidiMessageEvent__MidiMessageEvent_____);
             return ret;
         },
