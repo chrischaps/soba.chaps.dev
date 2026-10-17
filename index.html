@@ -1,3 +1,239 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><title>Soba</title>
-<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#1a1a2e;color:#c8c8d8;font:16px/1.5 system-ui,sans-serif}</style>
-<p>Soba is on its way here. Meanwhile it plays at <a style="color:#4fc3f7" href="https://docs.chaps.dev/soba/play/">docs.chaps.dev/soba/play</a>.</p></html>
+<!DOCTYPE html>
+<html lang="en">
+<!--
+  Soba in the browser. Build with trunk (https://trunkrs.dev):
+    trunk serve            # http://127.0.0.1:8080, rebuilt on save
+    trunk build --release  # into dist/, for soba.chaps.dev
+  Add ?patch=lush-pad to embed an example (just the canvas and a Play
+  button), or ?open=lush-pad to open it in the full app.
+-->
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#1a1a2e" />
+    <title>Soba</title>
+    <meta name="description" content="A node-based modular synthesizer, playable in the browser." />
+
+    
+<script type="module">
+import init, * as bindings from './soba-5bd1ca0bb52e351b.js';
+const wasm = await init({ module_or_path: './soba-5bd1ca0bb52e351b_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+    <!-- The examples' samples, fetched when a patch first plays one rather
+         than carried in the wasm (src/persistence/example_fetch.rs) -->
+    
+
+    <script>
+        // Browsers hold a page's sound until it's clicked or a key is pressed
+        // (their autoplay rule), and Safari only lets go inside the click
+        // itself. So every audio context the app makes is noted here and
+        // resumed from the first gesture, and the app asks
+        // sobaAudioBlocked() to show "Click to start sound" until then.
+        (function () {
+            const contexts = [];
+            const Native = window.AudioContext || window.webkitAudioContext;
+            if (!Native) return;
+            class TrackedAudioContext extends Native {
+                constructor(...args) {
+                    super(...args);
+                    contexts.push(this);
+                }
+            }
+            window.AudioContext = TrackedAudioContext;
+            const resume = () => contexts.forEach((c) => c.state === "suspended" && c.resume());
+            for (const gesture of ["pointerdown", "pointerup", "keydown", "touchend"]) {
+                window.addEventListener(gesture, resume, { capture: true });
+            }
+            window.sobaAudioBlocked = () => contexts.some((c) => c.state === "suspended");
+
+            // The app's sound arrives as buffers, each scheduled to start as
+            // the one before ends (cpal's WebAudio host). If the page is busy
+            // for longer than a buffer, one is scheduled for a moment already
+            // past, and cpal never catches up: every buffer after it would
+            // start early, over the one still playing. So the schedule is
+            // moved on by however late it fell, leaving one gap (a dropout)
+            // instead of garbled sound from then on. The dropouts are counted
+            // in sobaAudioStats, for the browser tests.
+            const stats = { buffers: 0, late: 0, lagMs: 0, peak: 0, renderMs: 0, renderMaxMs: 0 };
+            window.sobaAudioStats = () => ({ ...stats, lagMs: Math.round(stats.lagMs), renderMs: +stats.renderMs.toFixed(1), renderMaxMs: +stats.renderMaxMs.toFixed(1), contexts: contexts.map((c) => c.state) });
+            // How long the app takes to render each buffer, which is the
+            // time the page's thread is busy with sound rather than drawing
+            const listen = AudioBufferSourceNode.prototype.addEventListener;
+            AudioBufferSourceNode.prototype.addEventListener = function (type, fn, ...rest) {
+                if (type !== "ended") return listen.call(this, type, fn, ...rest);
+                return listen.call(this, type, function (...args) {
+                    const t0 = performance.now();
+                    const result = fn.apply(this, args);
+                    const ms = performance.now() - t0;
+                    stats.renderMs = stats.renderMs * 0.95 + ms * 0.05;
+                    stats.renderMaxMs = Math.max(stats.renderMaxMs, ms);
+                    return result;
+                }, ...rest);
+            };
+            const start = AudioBufferSourceNode.prototype.start;
+            const lag = new WeakMap();
+            AudioBufferSourceNode.prototype.start = function (when = 0, ...rest) {
+                const ctx = this.context;
+                if (when > 0) {
+                    let shift = lag.get(ctx) || 0;
+                    // A safety margin of 10ms, so the buffer after a dropout isn't late too
+                    if (when + shift < ctx.currentTime) {
+                        shift = ctx.currentTime - when + 0.01;
+                        lag.set(ctx, shift);
+                        stats.late += 1;
+                        stats.lagMs = shift * 1000;
+                    }
+                    when += shift;
+                }
+                stats.buffers += 1;
+                if (this.buffer && stats.buffers % 8 === 0) {
+                    for (const x of this.buffer.getChannelData(0)) stats.peak = Math.max(stats.peak, Math.abs(x));
+                }
+                return start.call(this, when, ...rest);
+            };
+        })();
+
+        // F1 shows the app's Keyboard Shortcuts, but Chrome, Edge and Firefox
+        // open their own help on it unless the page says no. The app still
+        // hears the key: this only stops the browser's default
+        window.addEventListener("keydown", (e) => {
+            if (e.key === "F1") e.preventDefault();
+        }, { capture: true });
+
+        // A patch link pasted into this tab's address bar changes only the
+        // fragment, which doesn't reload the page: the app picks it up and
+        // opens it, asking first if there are unsaved changes
+        window.addEventListener("hashchange", () => { window.sobaNewHash = location.hash; });
+
+        // Files kept only in the tab (takes, trims, files dropped in) are
+        // kept in IndexedDB too, so a reload, or an autosave recovered,
+        // finds them again (src/persistence/tab_store.rs). Every open copy
+        // of the app notes in localStorage that it's still open, so one
+        // starting up tidies away files nobody names only when it's alone.
+        window.sobaTabFiles = (function () {
+            const ALIVE = "soba-open-";
+            // A hidden tab's timers can slow to one a minute
+            const GONE_AFTER_MS = 3 * 60 * 1000;
+            const me = ALIVE + Math.random().toString(36).slice(2);
+            // An embed (?patch=) keeps nothing, so it needn't be waited for
+            if (!new URLSearchParams(location.search).has("patch")) {
+                const beat = () => { try { localStorage.setItem(me, String(Date.now())); } catch (e) {} };
+                beat();
+                setInterval(beat, 5000);
+                window.addEventListener("pageshow", beat);
+                window.addEventListener("pagehide", () => { try { localStorage.removeItem(me); } catch (e) {} });
+            }
+
+            let db;
+            const open = () => db ??= new Promise((resolve, reject) => {
+                const request = indexedDB.open("soba", 1);
+                request.onupgradeneeded = () => request.result.createObjectStore("tab-files");
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+            // Answers once the transaction is done, so a write is on disk
+            const run = (mode, act) => open().then((db) => new Promise((resolve, reject) => {
+                const transaction = db.transaction("tab-files", mode);
+                const request = act(transaction.objectStore("tab-files"));
+                transaction.oncomplete = () => resolve(request.result);
+                transaction.onerror = transaction.onabort = () => reject(transaction.error);
+            }));
+            return {
+                keys: () => run("readonly", (files) => files.getAllKeys()),
+                get: (key) => run("readonly", (files) => files.get(key)),
+                put: (key, bytes) => run("readwrite", (files) => files.put(bytes, key)),
+                remove: (key) => run("readwrite", (files) => files.delete(key)),
+                // Whether another copy of the app is open, forgetting any long gone
+                othersOpen: () => {
+                    let others = false;
+                    try {
+                        for (const key of Object.keys(localStorage).filter((k) => k.startsWith(ALIVE) && k !== me)) {
+                            if (Date.now() - Number(localStorage.getItem(key)) < GONE_AFTER_MS) others = true;
+                            else localStorage.removeItem(key);
+                        }
+                    } catch (e) {
+                        return true;
+                    }
+                    return others;
+                },
+            };
+        })();
+    </script>
+
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1a1a2e;
+            color: #c8c8dc;
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+
+        canvas#soba {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            outline: none;
+            touch-action: none;
+        }
+
+        /* Until the app takes over: one cable, carrying a signal */
+        #loading {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            text-align: center;
+            padding: 0 16px;
+            pointer-events: none;
+            background:
+                linear-gradient(#24243a 1px, transparent 1px) 0 0 / 24px 24px,
+                linear-gradient(90deg, #24243a 1px, transparent 1px) 0 0 / 24px 24px,
+                #1a1a2e;
+        }
+        #loading svg { width: min(280px, 70vw); height: auto; overflow: visible; }
+        #loading .cable { fill: none; stroke: #4287f5; stroke-width: 3; stroke-linecap: round; opacity: 0.35; }
+        #loading .flow {
+            fill: none; stroke: #8db6ff; stroke-width: 3; stroke-linecap: round;
+            stroke-dasharray: 2 22;
+            animation: flow 0.9s linear infinite;
+            filter: drop-shadow(0 0 4px #4287f5);
+        }
+        #loading .jack { fill: #2d2d46; stroke: #4287f5; stroke-width: 2; }
+        #loading .name { font-size: 15px; letter-spacing: 0.32em; color: #e6e6f5; font-weight: 600; }
+        #loading .hint { font-size: 13px; color: #8a8aa8; max-width: 34em; line-height: 1.5; }
+        @keyframes flow { to { stroke-dashoffset: -24; } }
+        @media (prefers-reduced-motion: reduce) { #loading .flow { animation: none; } }
+    </style>
+<link rel="modulepreload" href="./soba-5bd1ca0bb52e351b.js" crossorigin="anonymous" integrity="sha384-UwMmtBOnplCyqd3j4No2YnYA2Xarm2D19B82rtaSdvuWQB6iU+O1hhPTMH7QDL4C"><link rel="preload" href="./soba-5bd1ca0bb52e351b_bg.wasm" crossorigin="anonymous" integrity="sha384-U6AePofMhrX2PuTLqyI+yJtsjrNoWOiM92SDjYDwkzK4D1T3Nn2bhinu3mPKfn4s" as="fetch" type="application/wasm"></head>
+
+<body>
+    <canvas id="soba"></canvas>
+    <div id="loading">
+        <svg viewBox="0 0 280 90" aria-hidden="true">
+            <path class="cable" d="M 14 20 C 120 20, 160 70, 266 70" />
+            <path class="flow" d="M 14 20 C 120 20, 160 70, 266 70" />
+            <circle class="jack" cx="14" cy="20" r="7" />
+            <circle class="jack" cx="266" cy="70" r="7" />
+        </svg>
+        <div class="name">soba</div>
+        <div class="hint">Patching the cables…</div>
+    </div>
+</body>
+
+</html>
