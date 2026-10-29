@@ -19,7 +19,7 @@
 
     
 <script type="module">
-const build = (await window.sobaIsolate()) ? './soba-24561dc78a30c0e8' : './soba-48d87c39dc2439da';
+const build = (await window.sobaIsolate()) ? './soba-86a88fe6203cf9dc' : './soba-98cac3ba0e28658b';
 const bindings = await import(build + '.js');
 const init = bindings.default;
 const wasm = await init({ module_or_path: build + '_bg.wasm' });
