@@ -17,9 +17,11 @@
     <title>Soba</title>
     <meta name="description" content="A node-based modular synthesizer, playable in the browser." />
 
+    <!-- wasm-opt -O2: after the dist profile's fat LTO, -O3 took 9x as long
+         for 1% less served (#494) -->
     
 <script type="module">
-const build = (await window.sobaIsolate()) ? './soba-e3657514b7796c09' : './soba-c3d98fd407562ea9';
+const build = (await window.sobaIsolate()) ? './soba-eac01b4c396e0299' : './soba-63393d2581d26185';
 const bindings = await import(build + '.js');
 const init = bindings.default;
 const wasm = await init({ module_or_path: build + '_bg.wasm' });
