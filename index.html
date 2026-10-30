@@ -21,7 +21,7 @@
          for 1% less served (#494) -->
     
 <script type="module">
-const build = (await window.sobaIsolate()) ? './soba-eac01b4c396e0299' : './soba-63393d2581d26185';
+const build = (await window.sobaIsolate()) ? './soba-4c6e934b51122a79' : './soba-dd32900f0d877f77';
 const bindings = await import(build + '.js');
 const init = bindings.default;
 const wasm = await init({ module_or_path: build + '_bg.wasm' });
